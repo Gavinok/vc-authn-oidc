@@ -56,7 +56,7 @@ a {
 	left: 10px;
 	height: 90%;
 	width: 90%;
-	background-color: rgba(255, 255, 255, 0.9);
+	background-color: rgba(255, 255, 255, 0);
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -69,6 +69,9 @@ a {
 	border-width: 2px;
 	border-color: var(--qr-accent-color);
 	color: var(--qr-accent-color);
+}
+.qr-fade {
+	opacity: 0.1;
 }
 .qr-button .btn:hover,
 .qr-button .btn:active {
