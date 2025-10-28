@@ -1,5 +1,6 @@
 """Tests for updated webhook handler with cleanup functionality."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch, Mock
 import pytest
@@ -7,6 +8,7 @@ from bson import ObjectId
 from fastapi import Request
 
 from api.authSessions.models import AuthSession, AuthSessionState
+from api.routers import acapy_handler
 from api.routers.acapy_handler import post_topic
 
 
@@ -92,6 +94,10 @@ class TestAcapyHandlerCleanup:
 
         # Act
         await post_topic(mock_request, "present_proof_v2_0", mock_db)
+
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks)
 
         # Assert
         # Verify presentation data was retrieved
@@ -237,6 +243,10 @@ class TestAcapyHandlerCleanup:
         # Act
         await post_topic(mock_request, "present_proof_v2_0", mock_db)
 
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks)
+
         # Assert
         # Verify presentation data was retrieved
         mock_client_instance.get_presentation_request.assert_called_once_with(
@@ -297,6 +307,12 @@ class TestAcapyHandlerCleanup:
 
         # Act
         await post_topic(mock_request, "present_proof_v2_0", mock_db)
+
+        # Wait for background cleanup tasks to complete (exceptions are handled internally)
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(
+                *acapy_handler.background_cleanup_tasks, return_exceptions=True
+            )
 
         # Assert
         # Verify presentation data was retrieved
@@ -436,6 +452,10 @@ class TestAcapyHandlerCleanup:
 
         # Act
         await post_topic(mock_request, "present_proof_v2_0", mock_db)
+
+        # Wait for background cleanup tasks to complete (exceptions are handled internally)
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks, return_exceptions=True)
 
         # Assert - Cleanup failure should not prevent successful verification
         assert mock_auth_session.presentation_exchange == {"test": "presentation_data"}

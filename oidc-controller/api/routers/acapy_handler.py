@@ -21,8 +21,52 @@ logger: structlog.typing.FilteringBoundLogger = structlog.getLogger(__name__)
 
 router = APIRouter()
 
+# Maximum number of concurrent background cleanup tasks
+# Prevents memory exhaustion in high-traffic scenarios
+MAX_BACKGROUND_CLEANUP_TASKS = 100
+
 # Track background cleanup tasks to prevent garbage collection
 background_cleanup_tasks: Set[asyncio.Task] = set()
+
+
+async def shutdown_background_cleanups(timeout: float = 30.0) -> None:
+    """Wait for pending background cleanup tasks to complete during shutdown.
+
+    Args:
+        timeout: Maximum time to wait for tasks in seconds (default: 30)
+    """
+    if not background_cleanup_tasks:
+        logger.info("No pending background cleanup tasks during shutdown")
+        return
+
+    task_count = len(background_cleanup_tasks)
+    logger.info(
+        "Waiting for background cleanup tasks to complete during shutdown",
+        pending_tasks=task_count,
+        timeout_seconds=timeout,
+    )
+
+    try:
+        # Wait for all tasks with timeout
+        await asyncio.wait_for(
+            asyncio.gather(*background_cleanup_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+        logger.info(
+            "All background cleanup tasks completed during shutdown",
+            completed_tasks=task_count,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Background cleanup tasks timed out during shutdown",
+            pending_tasks=len(background_cleanup_tasks),
+            timeout_seconds=timeout,
+        )
+        # Cancel remaining tasks
+        for task in background_cleanup_tasks:
+            if not task.done():
+                task.cancel()
+        logger.info("Cancelled remaining background cleanup tasks")
 
 
 def _start_background_cleanup(
@@ -35,6 +79,18 @@ def _start_background_cleanup(
         pres_ex_id: Presentation exchange ID
         context: Context for logging (e.g., "successful verification")
     """
+    # Check if we've hit the concurrent task limit
+    if len(background_cleanup_tasks) >= MAX_BACKGROUND_CLEANUP_TASKS:
+        logger.warning(
+            "Maximum background cleanup tasks reached, skipping cleanup",
+            pres_ex_id=pres_ex_id,
+            context=context,
+            active_tasks=len(background_cleanup_tasks),
+            max_tasks=MAX_BACKGROUND_CLEANUP_TASKS,
+            operation="background_cleanup_limit_reached",
+        )
+        return
+
     task = asyncio.create_task(
         _cleanup_presentation_and_connection(auth_session, pres_ex_id, context)
     )
@@ -42,11 +98,12 @@ def _start_background_cleanup(
     # Prevent garbage collection by storing reference
     background_cleanup_tasks.add(task)
 
-    # Auto-remove task when complete to prevent memory leaks
-    task.add_done_callback(background_cleanup_tasks.discard)
+    # Single callback that handles both cleanup and logging
+    def _handle_task_completion(completed_task: asyncio.Task) -> None:
+        # Remove task from tracking set to prevent memory leaks
+        background_cleanup_tasks.discard(completed_task)
 
-    # Add structured logging for task completion/failure
-    def _log_task_completion(completed_task: asyncio.Task) -> None:
+        # Log completion or failure
         if completed_task.exception():
             logger.error(
                 "Background cleanup task failed",
@@ -54,6 +111,7 @@ def _start_background_cleanup(
                 context=context,
                 error=str(completed_task.exception()),
                 error_type=type(completed_task.exception()).__name__,
+                active_cleanup_tasks=len(background_cleanup_tasks),
                 operation="background_cleanup",
             )
         else:
@@ -61,15 +119,17 @@ def _start_background_cleanup(
                 "Background cleanup task completed successfully",
                 pres_ex_id=pres_ex_id,
                 context=context,
+                active_cleanup_tasks=len(background_cleanup_tasks),
                 operation="background_cleanup",
             )
 
-    task.add_done_callback(_log_task_completion)
+    task.add_done_callback(_handle_task_completion)
 
     logger.info(
         "Started background cleanup task",
         pres_ex_id=pres_ex_id,
         context=context,
+        active_cleanup_tasks=len(background_cleanup_tasks),
         operation="background_cleanup_start",
     )
 
@@ -141,8 +201,11 @@ async def _cleanup_presentation_and_connection(
             logger.warning(f"{context.capitalize()} cleanup errors: {errors}")
 
     except Exception as cleanup_error:
-        logger.warning(
-            f"Cleanup failed for presentation record {pres_ex_id} after {context}: {cleanup_error} - will be handled by background cleanup"
+        logger.exception(
+            f"Cleanup failed for presentation record {pres_ex_id} after {context} - will be handled by background cleanup",
+            pres_ex_id=pres_ex_id,
+            context=context,
+            operation="cleanup_presentation_and_connection",
         )
 
 

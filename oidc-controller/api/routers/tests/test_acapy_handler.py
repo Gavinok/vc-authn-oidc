@@ -1,5 +1,6 @@
 """Tests for the ACA-Py webhook handler."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ from pymongo.database import Database
 
 from api.authSessions.models import AuthSession, AuthSessionState
 from api.core.config import settings
+from api.routers import acapy_handler
 from api.routers.acapy_handler import post_topic
 
 
@@ -552,6 +554,10 @@ class TestConnectionBasedVerificationIntegration:
         # Execute
         result = await post_topic(mock_request, "present_proof_v2_0", mock_db)
 
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks)
+
         # Verify
         assert result == {}
         # Verify the wrapper function was called once for both presentation and connection cleanup
@@ -898,6 +904,10 @@ class TestAcapyHandlerCleanupFunctions:
         # Execute
         result = await post_topic(mock_request, "present_proof_v2_0", mock_db)
 
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks)
+
         # Verify
         assert result == {}
         # Verify the wrapper function was called
@@ -957,6 +967,12 @@ class TestAcapyHandlerCleanupFunctions:
 
         # Execute - should not raise exception
         result = await post_topic(mock_request, "present_proof_v2_0", mock_db)
+
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(
+                *acapy_handler.background_cleanup_tasks, return_exceptions=True
+            )
 
         # Verify
         assert result == {}
@@ -1035,6 +1051,10 @@ class TestAcapyHandlerCleanupFunctions:
 
         # Execute
         result = await post_topic(mock_request, "present_proof_v2_0", mock_db)
+
+        # Wait for background cleanup tasks to complete
+        if acapy_handler.background_cleanup_tasks:
+            await asyncio.gather(*acapy_handler.background_cleanup_tasks)
 
         # Verify
         assert result == {}

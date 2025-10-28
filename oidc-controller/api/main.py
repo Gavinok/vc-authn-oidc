@@ -165,6 +165,9 @@ async def on_tenant_shutdown():
     """Gracefully shutdown services."""
     logger.info(">>> Shutting down app ...")
 
+    # Wait for background cleanup tasks to complete
+    await acapy_handler.shutdown_background_cleanups(timeout=30.0)
+
 
 @app.get("/", tags=["liveness", "readiness"])
 @app.get("/health", tags=["liveness", "readiness"])
