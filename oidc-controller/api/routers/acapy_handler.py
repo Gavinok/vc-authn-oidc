@@ -1,4 +1,6 @@
 import json
+import asyncio
+from typing import Set
 from pydantic.plugin import Any
 import structlog
 from datetime import datetime, timedelta, UTC
@@ -18,6 +20,58 @@ from ..routers.socketio import sio, get_socket_id_for_pid, safe_emit
 logger: structlog.typing.FilteringBoundLogger = structlog.getLogger(__name__)
 
 router = APIRouter()
+
+# Track background cleanup tasks to prevent garbage collection
+background_cleanup_tasks: Set[asyncio.Task] = set()
+
+
+def _start_background_cleanup(
+    auth_session: AuthSession, pres_ex_id: str, context: str
+) -> None:
+    """Start cleanup task in background without blocking verification.
+
+    Args:
+        auth_session: The authentication session
+        pres_ex_id: Presentation exchange ID
+        context: Context for logging (e.g., "successful verification")
+    """
+    task = asyncio.create_task(
+        _cleanup_presentation_and_connection(auth_session, pres_ex_id, context)
+    )
+
+    # Prevent garbage collection by storing reference
+    background_cleanup_tasks.add(task)
+
+    # Auto-remove task when complete to prevent memory leaks
+    task.add_done_callback(background_cleanup_tasks.discard)
+
+    # Add structured logging for task completion/failure
+    def _log_task_completion(completed_task: asyncio.Task) -> None:
+        if completed_task.exception():
+            logger.error(
+                "Background cleanup task failed",
+                pres_ex_id=pres_ex_id,
+                context=context,
+                error=str(completed_task.exception()),
+                error_type=type(completed_task.exception()).__name__,
+                operation="background_cleanup",
+            )
+        else:
+            logger.debug(
+                "Background cleanup task completed successfully",
+                pres_ex_id=pres_ex_id,
+                context=context,
+                operation="background_cleanup",
+            )
+
+    task.add_done_callback(_log_task_completion)
+
+    logger.info(
+        "Started background cleanup task",
+        pres_ex_id=pres_ex_id,
+        context=context,
+        operation="background_cleanup_start",
+    )
 
 
 async def _send_problem_report_safely(
@@ -272,8 +326,8 @@ async def post_topic(request: Request, topic: str, db: Database = Depends(get_db
                         f"Retrieved presentation data via API for {webhook_body['pres_ex_id']}"
                     )
 
-                    # Cleanup presentation record and connection after successful verification
-                    await _cleanup_presentation_and_connection(
+                    # Cleanup presentation record and connection after successful verification (non-blocking)
+                    _start_background_cleanup(
                         auth_session,
                         webhook_body["pres_ex_id"],
                         "successful verification",
@@ -321,8 +375,8 @@ async def post_topic(request: Request, topic: str, db: Database = Depends(get_db
 
                 await _update_auth_session(db, auth_session)
 
-                # Cleanup presentation record and connection after abandonment
-                await _cleanup_presentation_and_connection(
+                # Cleanup presentation record and connection after abandonment (non-blocking)
+                _start_background_cleanup(
                     auth_session, webhook_body["pres_ex_id"], "abandonment"
                 )
 
@@ -369,8 +423,8 @@ async def post_topic(request: Request, topic: str, db: Database = Depends(get_db
 
                 await _update_auth_session(db, auth_session)
 
-                # Cleanup presentation record and connection after expiration
-                await _cleanup_presentation_and_connection(
+                # Cleanup presentation record and connection after expiration (non-blocking)
+                _start_background_cleanup(
                     auth_session, auth_session.pres_exch_id, "expiration"
                 )
 
